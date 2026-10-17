@@ -1,19 +1,5 @@
-# Task queue: keep directory skeleton, ignore queue contents.
-.tasks/todo/*
-!.tasks/todo/.keep
-.tasks/in_progress/*
-!.tasks/in_progress/.keep
-.tasks/done/*
-!.tasks/done/.keep
-
-# Worker locks and logs are runtime-only.
-.agent-locks/*
-!.agent-locks/.keep
-.agent-logs/*
-!.agent-logs/.keep
-
-# Per-worker git worktrees (used for parallel-safe AI work). Runtime only.
-.worktrees/
+# agent-conductor runtime state (when dogfooding the skill on this repo).
+.conductor/
 
 # Editor / OS noise.
 .DS_Store

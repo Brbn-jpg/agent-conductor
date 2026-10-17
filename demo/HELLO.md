@@ -1,3 +1,0 @@
-# Witaj!
-
-Projekt claude-conductor to lokalny grid agentów AI, który został zbudowany w oparciu o Bash, tmux oraz Gemini CLI. System ten umożliwia efektywne zarządzanie i koordynację pracy wielu agentów w środowisku lokalnym. Dzięki wykorzystaniu sprawdzonych narzędzi terminalowych, zapewnia on stabilność oraz dużą elastyczność w codziennej pracy programistycznej. Jest to innowacyjne podejście do automatyzacji zadań przy użyciu sztucznej inteligencji bezpośrednio na Twojej maszynie.

@@ -2,6 +2,46 @@
 
 Format: [Keep a Changelog](https://keepachangelog.com/), versioning: [SemVer](https://semver.org/).
 
+## [1.0.0] — 2026-10-17
+
+**claude-conductor becomes agent-conductor:** an agent skill that any skill-capable agent (Claude Code, Codex, Antigravity CLI, …) can run as the manager. The user chooses the worker agent. gemini-cli stopped serving individual accounts on 2026-06-18, so v0.x workers no longer run.
+
+### Breaking
+
+- **Install as a skill:** clone into `~/.agents/skills/agent-conductor` and symlink it into each agent's skills directory. The manager instructions moved from `CLAUDE.md` to `SKILL.md`.
+- **Spawn per task instead of a queue:** the manager calls `spawn.sh` once per task. There is no `.tasks/todo` queue, no mkdir locks and no `in_progress/`.
+- **No default worker agent.** A setup dialog (backed by `configure.sh`) asks the user for the agent, model, test/setup commands and parallelism, and saves the answers in `.conductor/config`. Presets: `agy`, `claude`, `codex`; any other CLI via `AGENT=custom` + `AGENT_CMD`.
+- **Runtime state** lives in `<target repo>/.conductor/` (auto-added to `.git/info/exclude`). Branches are `conductor/<id>` instead of `ai-grid/<task>`. The commit trailer is `Conductor-Task: <id>` instead of `AI-Grid: <task>`.
+- Env vars are namespaced: `CONDUCTOR_TEST_CMD` instead of `TEST_CMD`.
+- Scripts run against the repo you're in, not the repo they live in.
+
+### Script map
+
+| v0.x | v1.0 |
+|---|---|
+| `launch-grid.sh` + `worker-agent.sh` | `scripts/spawn.sh` |
+| `status.sh` | `scripts/status.sh` (+ `--wait`, `--wait-slot`, `<id>`, `DEAD` detection) |
+| `integrate.sh` | `scripts/merge.sh` (merges only `done` workers) |
+| manual worktree/branch removal | `scripts/cleanup.sh` (refuses unmerged work without `--force`) |
+| `run_ai()` edits | `scripts/configure.sh` + `.conductor/config` |
+| `.tasks/_template*.md` | `references/task-splitting.md` |
+
+### Added
+
+- `configure.sh detect` checks every preset's login without a model call (`agy models`, `claude auth status`, `codex login status`). `spawn.sh` runs the same check (cached 10 min) and fails fast with exit 7 and a login hint.
+- `SETUP_CMD` runs in each fresh worktree before the agent (installs deps). Untracked files it creates are never committed. `configure.sh suggest` proposes test/setup commands from `package.json`, `pyproject.toml`, `go.mod`, `Cargo.toml` or `Makefile`.
+- A per-task `## Test command` section overrides `TEST_CMD`; `none` skips tests for that task.
+- `TIMEOUT` applies to every agent (default 20m). A hung agent's process tree is killed and the worker ends with the new status `timeout`.
+- `MAX_WORKERS` is enforced: `spawn.sh` exits 5 beyond the limit, and `status.sh --wait-slot` waits for a free slot.
+- Recursion guard: workers run with `CONDUCTOR_WORKER=1`, `spawn.sh` exits 8 inside a worker, and `agy`/`claude` workers get `--disable-slash-commands`.
+- Worker statuses: `running`, `done`, `no-changes`, `setup-fail`, `agent-fail`, `timeout`, `test-fail`, `commit-fail`, `failed`, `dead`, `merged`.
+- Process-group stop: killing a pane doesn't stop the agent, so `merge.sh` and `cleanup.sh` kill the worker's process group.
+- `references/troubleshooting.md`.
+
+### Removed
+
+- `launch-grid.sh`, `worker-agent.sh`, `integrate.sh`, root `status.sh`, `.tasks/`, `.agent-locks/`, `.agent-logs/`, `demo/`. They are still available at tag `v0.4.1`.
+
 ## [0.4.1] — 2026-05-21
 
 Project translated to English. All docs (README, CHANGELOG, CLAUDE.md), shell script comments, log messages, templates, and output strings are now in English. Behavior is unchanged.
@@ -123,8 +163,9 @@ Inspired by a Reddit thread on lightweight multi-agent setups. Built on the prin
 
 ---
 
-[0.4.1]: https://github.com/Brbn-jpg/claude-conductor/releases/tag/v0.4.1
-[0.4.0]: https://github.com/Brbn-jpg/claude-conductor/releases/tag/v0.4.0
-[0.3.0]: https://github.com/Brbn-jpg/claude-conductor/releases/tag/v0.3.0
-[0.2.0]: https://github.com/Brbn-jpg/claude-conductor/releases/tag/v0.2.0
-[0.1.0]: https://github.com/Brbn-jpg/claude-conductor/releases/tag/v0.1.0
+[1.0.0]: https://github.com/Brbn-jpg/agent-conductor/releases/tag/v1.0.0
+[0.4.1]: https://github.com/Brbn-jpg/agent-conductor/releases/tag/v0.4.1
+[0.4.0]: https://github.com/Brbn-jpg/agent-conductor/releases/tag/v0.4.0
+[0.3.0]: https://github.com/Brbn-jpg/agent-conductor/releases/tag/v0.3.0
+[0.2.0]: https://github.com/Brbn-jpg/agent-conductor/releases/tag/v0.2.0
+[0.1.0]: https://github.com/Brbn-jpg/agent-conductor/releases/tag/v0.1.0

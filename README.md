@@ -1,182 +1,150 @@
-# claude-conductor
+# agent-conductor
 
-> **Run N AI agents in parallel. Bash + tmux + gemini CLI. No frameworks.**
+> **An agent skill: run N coding agents in parallel, one git worktree and one tmux pane each. Bash + tmux + git. No frameworks.**
 
-Drop tasks into `.tasks/todo/` as Markdown files. `./launch-grid.sh --workers N` spawns N parallel workers in a `tmux` session — each in **its own git worktree**, each commit on **its own branch** `ai-grid/<task>`. After workers finish, you (as the manager) merge what's good.
+Any agent that loads skills can be the **manager**: Claude Code, Codex,
+Antigravity CLI, and others. The manager splits a big job into small
+independent tasks and spawns one worker per task. Each worker gets its own
+worktree (`.conductor/worktrees/<id>`), its own branch (`conductor/<id>`), and its
+own pane in the tmux session `conductor-<repo>`. When workers finish, the
+manager reads 15-line summaries instead of full logs and cherry-picks the good
+branches back as a linear history. It always asks before it pushes.
 
-No Docker, no Python stacks, no orchestrators. The lock file is a directory created with `mkdir`. The queue is a directory of `.md` files. That's it.
+**You choose the worker agent.** There's no default. On the first run the
+manager detects which agents are installed and logged in, then asks you: which
+agent, which model, which test/setup commands, and how many workers at once.
+It saves your answers in `.conductor/config`, and next time it only asks whether to keep them.
 
-## Why?
-
-You have a batch of small, **independent** tasks — "add 5 tests to these endpoints", "generate fixtures for 12 models", "write 8 READMEs for the submodules"? Instead of waiting for one AI instance to grind through them sequentially, spawn N workers. Because gemini-cli (or any other CLI after swapping one function) in `--yolo` mode can operate on a repo unattended, but only if each instance has **its own sandbox**. Hence: worktree per worker.
-
-## What it looks like
-
-```
-                    +--------------------+
-        Manager  -> |  .tasks/todo/      |   (queue)
-                    +---------+----------+
-                              |
-                              v
-              .---------------+---------------.
-              |  launch-grid.sh (tmux + N)    |
-              '---------------+---------------'
-                              |
-        +---------------------+---------------------+
-        v                     v                     v
-  +-----------+         +-----------+         +-----------+
-  |  worker-1 |         |  worker-2 |   ...   |  worker-N |
-  |   (tmux)  |         |   (tmux)  |         |   (tmux)  |
-  +-----+-----+         +-----+-----+         +-----+-----+
-        |                     |                     |
-   mkdir-lock            mkdir-lock            mkdir-lock
-        |                     |                     |
-        v                     v                     v
-  .worktrees/            .worktrees/           .worktrees/
-   worker-1/              worker-2/             worker-N/
-   gemini --yolo          gemini --yolo         gemini --yolo
-        |                     |                     |
-   git commit -->         git commit -->        git commit -->
-   ai-grid/task-A         ai-grid/task-B        ai-grid/task-C
-        \_____________________|_____________________/
-                              |
-                              v
-                  Manager integrates
-                  whatever passes review
-```
-
-## Requirements
-
-- `bash` (4+ works, 5+ recommended)
-- `git`
-- `tmux` (`brew install tmux` / `apt install tmux`)
-- [gemini CLI](https://github.com/google-gemini/gemini-cli), authenticated — tested on 0.42.0. Just need `gemini` on PATH and a one-time `gemini auth login`.
-
-Not using gemini? Swap the body of the `run_ai()` function at the top of `worker-agent.sh` — that's it — works with any CLI that takes a prompt and writes files (claude-code, ollama, llm, etc.).
-
-## Quickstart
-
-```bash
-git clone https://github.com/Brbn-jpg/claude-conductor.git
-cd claude-conductor
-
-# 1. Create a task from the template
-cp .tasks/_template.md .tasks/todo/task-001-my-task.md
-$EDITOR .tasks/todo/task-001-my-task.md   # fill in Goal / Context / Files / DoD
-
-# 2. Launch the grid (default 2 workers)
-./launch-grid.sh --workers 2
-# Ctrl-b d — detach from session   |   tmux attach -t ai-grid — reattach
-
-# 3. See what the workers did
-./status.sh                             # one-shot overview
-git log -p ai-grid/task-001-my-task     # diff for a specific branch
-
-# 4. Integrate (cherry-pick, linear history, cleans worktree + branch)
-./integrate.sh --all                    # everything onto current branch
-git branch -D ai-grid/task-001-my-task  # optional, integrate.sh already removes it
-```
-
-Headless mode (CI / another script):
-
-```bash
-./launch-grid.sh --workers 3 --no-attach
-# session runs in the background; inspect: tmux attach -t ai-grid
-```
-
-## How it works
-
-Three mechanisms that make this work:
-
-1. **Atomic locks via `mkdir`** — workers seeing the same file in the queue never claim it concurrently. `mkdir foo.lock` is atomic on POSIX: only one process gets exit 0, the rest get `EEXIST`. No `flock`, no SQL, no Redis.
-
-2. **Worktree per worker** — `git worktree add --detach .worktrees/<worker-id> $BASE_BRANCH`. Gemini in `--yolo` writes files there, not in the main repo. No shared working tree = no race on `git add -A`.
-
-3. **Branch per task** — before each task the worker runs `git checkout -B ai-grid/<task-name> $BASE_SHA` inside its worktree. The commit lands on an isolated branch. After the session, merge what's good, drop the rest.
-
-**Crash-safe**: `trap EXIT` in the worker returns the task from `in_progress/` to `todo/` and releases the lock on SIGINT/SIGTERM/exception. `launch-grid.sh` cleans locks older than 60 minutes at startup (for workers that died before their trap could fire).
-
-## Project layout
-
-| Path | Role |
+| Worker preset | Headless invocation |
 |---|---|
-| `launch-grid.sh` | Orchestrator: lock cleanup, tmux session, `N` worker panes |
-| `worker-agent.sh` | Single worker loop: claim -> AI -> tests -> commit -> done |
-| `status.sh` | Aggregated grid status in one call (queue, branches, locks, summaries) |
-| `integrate.sh` | Cherry-pick `ai-grid/*` onto current branch (1 task = 1 commit, no merge commits) + cleanup worktree/branch |
-| `.tasks/_template.md` | Code task template (Goal / Context / Files / DoD) |
-| `.tasks/_template-research.md` | Research task template (gemini explores the codebase, writes a report instead of changing code) |
-| `.tasks/todo/` | Pending tasks |
-| `.tasks/in_progress/` | Tasks being processed |
-| `.tasks/done/` | Completed tasks (audit) |
-| `.agent-locks/` | Atomic `mkdir` locks per task |
-| `.agent-logs/` | Logs: `<worker>.log`, `<worker>_<task>.log` (full AI output), `<worker>_<task>.summary.md` (concise per-task report — manager reads this instead of the full log) |
-| `.worktrees/<worker-id>/` | Isolated worktree per worker (runtime, gitignored) |
-| `CLAUDE.md` | Instructions for Claude Code (when using it as the manager) |
+| `agy` ([Antigravity CLI](https://antigravity.google/docs/cli/headless/)) | `agy --print … --add-dir <worktree> --dangerously-skip-permissions` |
+| `claude` (Claude Code) | `claude -p … --dangerously-skip-permissions` |
+| `codex` (Codex CLI) | `codex exec --dangerously-bypass-approvals-and-sandbox -C <worktree> -` |
+| `custom` | any command; the prompt arrives on stdin |
+
+The manager and the workers can be different agents, e.g. Claude Code
+managing `agy` workers, or the other way round.
+
+```
+          manager (any skill-capable agent)
+                         |
+     setup dialog -> .conductor/config (agent, model, tests, N)
+                         |
+        writes .conductor/tasks/001-*.md, 002-*.md, ...
+                         |
+        spawn.sh ×N ------------------------------.
+          |                    |                   |
+   worktree + pane       worktree + pane     worktree + pane
+   setup -> agent -> test -> commit (conductor/<id>)
+          \____________________|___________________/
+                               |
+                 status.sh --wait  ->  summaries
+                               |
+                 merge.sh --all  (cherry-pick, linear)
+                               |
+                 cleanup.sh --all
+```
+
+## Install
+
+Clone once into the shared skills directory, then link it into each agent's
+skills directory:
+
+```bash
+git clone https://github.com/Brbn-jpg/agent-conductor.git ~/.agents/skills/agent-conductor
+
+ln -s ../../.agents/skills/agent-conductor ~/.claude/skills/agent-conductor                      # Claude Code
+ln -s ~/.agents/skills/agent-conductor ~/.codex/skills/agent-conductor                           # Codex
+ln -s ~/.agents/skills/agent-conductor ~/.gemini/antigravity-cli/skills/agent-conductor          # Antigravity CLI
+```
+
+Restart the agent. The skill loads when you ask for parallel work, for example
+*"write tests for these 6 endpoints in parallel"* or *"spawn workers for this"*.
+
+### Requirements
+
+- `git`, `tmux`, `bash` (3.2+ works, so stock macOS is fine)
+- at least one worker agent, installed and logged in. Check with `scripts/configure.sh detect`.
+  `agy` needs **one interactive sign-in**: headless mode uses cached credentials only.
+
+## Scripts
+
+All scripts run from anywhere inside the target repo.
+
+| Script | What it does |
+|---|---|
+| `scripts/configure.sh` | Backend for the setup dialog: `detect` (which agents are ready), `suggest` (test/setup commands for this repo), `show`, `set KEY=VALUE…`, `unset`. |
+| `scripts/spawn.sh <task.md>` | Creates the worktree and branch `conductor/<id>`, opens a tmux pane, and runs setup, agent, test and commit. Returns immediately. |
+| `scripts/status.sh` | Table of workers: status, time, commit, diff, `LARGE`/`DEAD` flags. `status.sh <id>` shows a worker's summary. `--wait` / `--wait-slot` block until workers finish or a slot frees up. |
+| `scripts/merge.sh --all` | Cherry-picks every `done` worker onto the current branch (1 task = 1 commit) and removes its worktree, branch and pane. Stops with exit 4 on a conflict. |
+| `scripts/cleanup.sh --all` | Removes panes, worktrees, branches and state. Refuses to drop running workers or unmerged commits unless you pass `--force`. |
+
+Using it by hand works the same as when the manager does it:
+
+```bash
+S=~/.agents/skills/agent-conductor/scripts
+$S/configure.sh detect
+$S/configure.sh set AGENT=agy TEST_CMD="npm test" SETUP_CMD="npm ci" MAX_WORKERS=4
+mkdir -p .conductor/tasks && $EDITOR .conductor/tasks/001-add-foo.md   # template: references/task-splitting.md
+$S/spawn.sh .conductor/tasks/001-add-foo.md
+$S/status.sh --wait
+$S/merge.sh --all
+$S/cleanup.sh --all
+```
 
 ## Configuration
 
-All knobs are in the first ~30 lines of `worker-agent.sh`:
+Precedence: flag > the task's `## Test command` section > env > `.conductor/config`.
 
-| Variable | Default | Description |
-|---|---|---|
-| `TEST_CMD` | `""` | Test command run after AI. Empty = skip. Examples: `"npm test"`, `"pytest -q"`, `"go test ./..."`. On failure: reset worktree, task returns to `todo/`. |
-| `POLL_INTERVAL` | `5` | Seconds between attempts to claim a task when all visible ones are locked. |
-| `BASE_BRANCH` | current branch | Branch each task starts from for `ai-grid/<task>`. |
-| `run_ai()` | `gemini --yolo --skip-trust --prompt …` | **Adapter function.** Swap the body to use a different CLI. |
+| Config key | Flag / env | Default | Meaning |
+|---|---|---|---|
+| `AGENT` | `--agent` / `CONDUCTOR_AGENT` | **none** | `agy`, `claude`, `codex`, `custom` |
+| `AGENT_CMD` | `CONDUCTOR_AGENT_CMD` | — | command for `custom`, eval'd with the prompt on stdin |
+| `MODEL` | `--model` / `CONDUCTOR_MODEL` | agent default | passed to the agent |
+| `SETUP_CMD` | `--setup` / `CONDUCTOR_SETUP_CMD` | — | runs in the fresh worktree before the agent (installs deps); its untracked output is never committed |
+| `TEST_CMD` | `--test` / `CONDUCTOR_TEST_CMD` | — | runs after the agent; a failure gives `test-fail` |
+| `MAX_WORKERS` | `CONDUCTOR_MAX_WORKERS` | `4` | workers running at once (`spawn.sh` exits 5 beyond that) |
+| `TIMEOUT` | `--timeout` / `CONDUCTOR_TIMEOUT` | `20m` | time limit per agent run; the process tree is killed when it's exceeded |
+| — | `LARGE_DIFF_LINES` | `100` | threshold for the `LARGE` flag |
 
-`launch-grid.sh`:
-- `--workers N` / `-w N` — number of panes (default 2)
-- `--no-attach` — create session and exit without `tmux attach` (useful in CI)
-
-## Parallelism safety
+## How it stays safe
 
 | Mechanism | What it solves |
 |---|---|
-| **Atomic `mkdir` lock** | Two workers seeing the same file in `todo/` — only one wins `mkdir .agent-locks/<task>.lock` (POSIX guarantees atomicity). |
-| **Worktree per worker** | No shared working tree -> no race when gemini writes files and `git add -A` runs. Each worker = its own `.worktrees/<worker-id>`. |
-| **Branch per task** | Each commit lands on `ai-grid/<task-name>`, so `git add -A` in one worktree doesn't pull in another worker's changes. |
-| **Trap rollback** | SIGINT/SIGTERM/crash -> task returns from `in_progress/` to `todo/`, lock released, worker exits cleanly. |
-| **Stale lock cleanup** | `launch-grid.sh` removes locks older than 60 min at startup (for workers that crashed without firing their trap). |
+| **Worktree per worker** | Agents never share a working tree, so there's no race on `git add -A`. |
+| **Branch per task** | Every result is isolated. Merge what's good, drop the rest. |
+| **Script commits, not the agent** | The commit subject is the task's `# H1`, plus a `Conductor-Task: <id>` trailer (`git log --grep Conductor-Task`). |
+| **Explicit agent choice + login check** | No surprise spending on an agent you didn't pick. A missing login fails fast (exit 7) instead of N failing workers. |
+| **Recursion guard** | Workers run with `CONDUCTOR_WORKER=1`, and `spawn.sh` refuses to run inside them. `agy`/`claude` workers also can't load skills. |
+| **Timeouts + process-group stop** | Hung agents get killed. `merge`/`cleanup` kill the whole process group, not just the pane. |
+| **Atomic status files** | `status` is written via tmp+mv. A `running` status whose process died shows as `DEAD`. |
+| **Git-excluded state** | `.conductor/` goes into `.git/info/exclude`, so your `.gitignore` stays untouched. |
+| **Cherry-pick, stop on conflict** | Linear history. The first conflict halts with exit 4 and nothing else is touched. |
+
+## Layout
+
+```
+SKILL.md                      manager instructions (loaded by the agent)
+scripts/                      configure.sh, spawn.sh, status.sh, merge.sh, cleanup.sh, _lib.sh
+references/task-splitting.md  how to split work + task templates
+references/troubleshooting.md
+tests/smoke.sh                end-to-end test with a fake agent (no LLM)
+
+<target repo>/.conductor/     runtime state (git-excluded)
+  config                      saved setup answers (KEY=VALUE)
+  tasks/                      task files written by the manager
+  workers/<id>/               task.md, env, status, pgid, agent.log, summary.md
+  worktrees/<id>/             the worker's git worktree
+```
 
 ## tmux cheatsheet
 
 ```bash
-tmux attach -t ai-grid             # attach to a running session
-# inside tmux:
-#   Ctrl-b d        — detach (session keeps running)
-#   Ctrl-b <arrow>  — jump between panes
-#   Ctrl-b z        — zoom into a single pane
-tmux list-panes -t ai-grid         # inspect panes from outside
-tmux capture-pane -t ai-grid:grid.0 -p   # dump pane 0 contents
-tmux kill-session -t ai-grid       # kill the whole session
+tmux attach -t conductor-<repo>   # watch workers live
+#   Ctrl-b d   detach    Ctrl-b z   zoom pane    Ctrl-b w   pick window
 ```
 
-## Cleanup after a session
-
-By default, `./integrate.sh` does this for you after each success (worktree + branch). Manually only when you want to discard results without integrating:
-
-```bash
-git worktree list                              # see active worktrees
-git worktree remove --force .worktrees/worker-1
-git branch -D ai-grid/task-XXX
-
-# Reset a whole session (all worker worktrees + ai-grid branches):
-git worktree list | awk '/.worktrees\// {print $1}' | xargs -n1 git worktree remove --force
-git branch | awk '/ai-grid\//{print $1}' | xargs -r git branch -D
-```
-
-## Known limitations
-
-- **Workers exit when `todo/` is empty.** If you want a "daemon" that stays up until `Ctrl-c`, replace `break` in the main loop of `worker-agent.sh` with `sleep "$POLL_INTERVAL"; continue`.
-- **No retry counter** — task crashes after AI failure return to the queue with no limit. In practice gemini is stable, but for production add a cap.
-- **Stale-lock cleanup** is hardcoded to 60 min. For long-running tasks, bump `STALE_LOCK_MINUTES` in `launch-grid.sh`.
-- **`--yolo` = full trust in the AI.** The framework isolates workers via worktrees, but the prompt won't write itself: task quality (DoD) determines output quality. Stick to the template.
-- **Lexicographic queue order by default** — workers pick files lexicographically from `todo/`. If you need priorities, prefix names (`task-001-`, `task-002-`).
-
-## Bonus: working with Claude Code
-
-The repo includes [`CLAUDE.md`](CLAUDE.md) with instructions for [Claude Code](https://claude.com/claude-code) in "Manager + Workers" mode: Claude breaks a big problem into atomic tasks in `.tasks/todo/`, you say "launch the grid", Claude asks for review of `[AI-Grid]` commits and permission to push. Not using Claude Code? Everything works identically by hand — you write tasks, you merge.
+Upgrading from claude-conductor v0.x (`launch-grid.sh`, gemini-cli)? See [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 
